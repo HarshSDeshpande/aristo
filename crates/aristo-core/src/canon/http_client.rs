@@ -24,6 +24,8 @@ use std::time::Duration;
 use serde::Serialize;
 use ureq::http::Response as HttpResponse;
 
+use crate::conductor::{paths, Route};
+
 use super::client::{AuthError, CanonClient, CanonError};
 use super::types::{
     CanonCatalogue, CanonCatalogueEntry, CanonMatchRequest, CanonMatchResponse, Serving,
@@ -85,17 +87,18 @@ impl HttpCanonClient {
         }
     }
 
-    /// `<base>/<repo>/api<path>`.
-    fn url(&self, path: &str) -> String {
-        format!("{}/{}/api{}", self.base_url, self.repo, path)
+    /// `<base>` + the generated route's path, its `:repo` filled.
+    fn url(&self, route: Route) -> String {
+        format!("{}{}", self.base_url, route.fill(&[("repo", &self.repo)]))
     }
 
-    fn post_json<Req, Resp>(&self, path: &str, body: &Req) -> Result<Resp, CanonError>
+    fn post_json<Req, Resp>(&self, route: Route, body: &Req) -> Result<Resp, CanonError>
     where
         Req: Serialize,
         Resp: for<'de> serde::Deserialize<'de>,
     {
-        let url = self.url(path);
+        debug_assert_eq!(route.method, "POST", "{}", route.id);
+        let url = self.url(route);
         let result = self
             .agent
             .post(&url)
@@ -119,13 +122,15 @@ impl std::fmt::Debug for HttpCanonClient {
 
 impl CanonClient for HttpCanonClient {
     fn match_annotations(&self, req: &CanonMatchRequest) -> Result<CanonMatchResponse, CanonError> {
-        self.post_json("/canon/match", req)
+        self.post_json(paths::PICTURE_CANON_MATCH, req)
     }
 
     fn catalogue(&self) -> Result<CanonCatalogue, CanonError> {
         // The wire is the bare list of entries; the served-edition
         // signal rides in the `x-aretta-serving*` headers.
-        let url = self.url("/catalogue");
+        let route = paths::PICTURE_CATALOGUE_GET;
+        debug_assert_eq!(route.method, "GET", "{}", route.id);
+        let url = self.url(route);
         let result = self
             .agent
             .get(&url)
@@ -426,15 +431,11 @@ mod tests {
         let tok = Token::new("t");
         let c = HttpCanonClient::new("https://api.example.test", &tok, "widgets");
         assert_eq!(
-            c.url("/canon/match"),
+            c.url(paths::PICTURE_CANON_MATCH),
             "https://api.example.test/widgets/api/canon/match"
         );
         assert_eq!(
-            c.url("/canon/entry/foo"),
-            "https://api.example.test/widgets/api/canon/entry/foo"
-        );
-        assert_eq!(
-            c.url("/catalogue"),
+            c.url(paths::PICTURE_CATALOGUE_GET),
             "https://api.example.test/widgets/api/catalogue"
         );
     }

@@ -18,6 +18,7 @@ pub mod auth;
 pub mod badge;
 pub mod canon;
 pub mod canon_verify;
+pub mod conductor;
 pub mod config;
 pub mod critique;
 pub mod cycle;
