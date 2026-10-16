@@ -22,8 +22,9 @@ pub struct OrgRepo {
     pub github_repo: String,
 }
 
-/// Path of the directory route, relative to the data-plane base.
-pub const ORG_REPOS_PATH: &str = "/_org/api/repos";
+/// Path of the directory route, relative to the data-plane base: the
+/// generated `identity.repos.list` route.
+pub const ORG_REPOS_PATH: &str = crate::conductor::paths::IDENTITY_REPOS_LIST.path;
 
 /// Fetch the repos the token admits at `base_url` (no trailing `/`).
 pub fn fetch_org_repos(base_url: &str, token: &Token) -> Result<Vec<OrgRepo>, AuthError> {

@@ -29,6 +29,7 @@ use ureq::http::Response as HttpResponse;
 
 use super::error::AuthError;
 use super::server::ServerUrl;
+use crate::conductor::paths;
 
 /// Per-request timeout — same value as `canon::http_client`.
 const REQUEST_TIMEOUT_SECS: u64 = 30;
@@ -115,16 +116,26 @@ pub struct GitHubUser {
 /// browser (or printing it for the user) and prompting for the code
 /// that the proxy's `/auth/callback` page displays.
 pub fn oauth_start(server: &ServerUrl) -> Result<OAuthInit, AuthError> {
-    let redirect_uri = format!("{}/auth/callback", server.as_str());
-    let url = format!(
-        "{}/auth/login?redirect_uri={}",
-        server.as_str(),
-        url_encode(&redirect_uri),
-    );
+    let url = login_url(server);
     let agent = build_agent();
     let result = agent.get(&url).call();
     let body = consume_response::<OAuthInit>(result)?;
     Ok(body)
+}
+
+/// `GET <server>/auth/login?redirect_uri=<server>/auth/callback`: the
+/// generated sign-in route. The redirect target is the proxy's callback
+/// page, a value the CLI passes and never calls.
+fn login_url(server: &ServerUrl) -> String {
+    let route = paths::IDENTITY_SESSION_LOGIN;
+    debug_assert_eq!(route.method, "GET", "{}", route.id);
+    let redirect_uri = format!("{}/auth/callback", server.as_str());
+    format!(
+        "{}{}?redirect_uri={}",
+        server.as_str(),
+        route.fill(&[]),
+        url_encode(&redirect_uri),
+    )
 }
 
 /// Minimal URL-encoder for query-param values. Hand-rolled instead
@@ -154,7 +165,9 @@ pub fn oauth_exchange(
     repo_full_name: Option<&str>,
     name: Option<&str>,
 ) -> Result<CliTokenResponse, AuthError> {
-    let url = format!("{}/auth/cli-token", server.as_str());
+    let route = paths::IDENTITY_CLI_TOKEN_MINT;
+    debug_assert_eq!(route.method, "POST", "{}", route.id);
+    let url = format!("{}{}", server.as_str(), route.fill(&[]));
     let req = CliTokenRequest {
         code,
         repo_full_name,
@@ -290,6 +303,25 @@ mod tests {
     // Pure response-mapping tests — no network. The end-to-end
     // HTTP coverage uses a TcpListener mock (see
     // `crates/aristo-cli/tests/auth_oauth_command.rs`).
+
+    #[test]
+    fn oauth_start_calls_the_generated_sign_in_route() {
+        let server = ServerUrl::parse("https://conductor.example.test");
+        assert_eq!(paths::IDENTITY_SESSION_LOGIN.method, "GET");
+        assert_eq!(
+            login_url(&server),
+            format!(
+                "https://conductor.example.test{}?redirect_uri={}",
+                paths::IDENTITY_SESSION_LOGIN.path,
+                "https%3A%2F%2Fconductor.example.test%2Fauth%2Fcallback"
+            )
+        );
+        // The URL the CLI sent before the route list was generated.
+        assert_eq!(
+            login_url(&server),
+            "https://conductor.example.test/auth/login?redirect_uri=https%3A%2F%2Fconductor.example.test%2Fauth%2Fcallback"
+        );
+    }
 
     #[test]
     fn map_response_2xx_decodes_oauth_init() {

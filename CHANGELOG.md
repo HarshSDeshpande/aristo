@@ -10,6 +10,7 @@ See [`CLAUDE.md`](./CLAUDE.md) §3 for the discipline.
 
 ### Changed
 - core: conductor paths generated from spec v0.2.100; no path changes. `aristo_core::conductor::paths` is the route registry's `callers: cli` rows, vendored with a sha256 lock under `spec/v0.2.100/`; a registry change reaches the CLI by re-vendoring and regenerating, never by hand.
+- cli: every conductor request (canon match, catalogue, verify session open/poll/cancel, sign-in, token mint, repo directory) takes its path from the generated route list; the URLs sent are unchanged.
 ## [0.8.3] — 2026-09-18
 
 ### Added

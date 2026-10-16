@@ -27,6 +27,7 @@ use aristo_core::canon::types::{
     VerificationMetadata,
 };
 use aristo_core::canon::{AuthError, CanonClient, CanonError, HttpCanonClient, Token};
+use aristo_core::conductor::paths;
 
 /// One canned HTTP/1.1 response. The test driver hands the listener
 /// a single response and shuts down.
@@ -179,7 +180,10 @@ fn match_annotations_happy_path_round_trips() {
     // Server-side assertions: confirm the SDK actually sent the right shape.
     let record = server.join().expect("server thread");
     assert_eq!(record.method, "POST");
-    assert_eq!(record.path, "/widgets/api/canon/match");
+    assert_eq!(
+        record.path,
+        paths::PICTURE_CANON_MATCH.fill(&[("repo", "widgets")])
+    );
     assert_eq!(
         record.authorization.as_deref(),
         Some("Bearer e2e-test-token")
@@ -346,7 +350,10 @@ fn catalogue_reads_the_serving_headers_and_the_bare_list() {
     let client = HttpCanonClient::new(base, &token, "widgets");
     let cat = client.catalogue().expect("catalogue");
     let record = server.join().unwrap();
-    assert_eq!(record.path, "/widgets/api/catalogue");
+    assert_eq!(
+        record.path,
+        paths::PICTURE_CATALOGUE_GET.fill(&[("repo", "widgets")])
+    );
     assert!(cat.entries.is_empty());
     let serving = cat.serving.expect("serving parsed from headers");
     assert!(serving.is_empty_edition(), "got {serving:?}");

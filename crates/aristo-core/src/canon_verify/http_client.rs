@@ -17,6 +17,7 @@ use ureq::http::Response as HttpResponse;
 use super::client::{VerifyClient, VerifyError};
 use super::types::{GetVerifySessionResponse, PostVerifySessionResponse, VerifySessionRequest};
 use crate::auth::{AuthError, Token};
+use crate::conductor::{paths, Route};
 
 /// Per-request transport timeout in seconds. Wide enough to comfort-
 /// ably absorb a 30-second server-side long-poll (§7c row 9) plus
@@ -60,18 +61,37 @@ impl HttpVerifyClient {
         }
     }
 
-    /// `<base>/<repo>/api<path>` — the verify routes live under the
-    /// repo's `api` prefix like the canon ones.
-    fn url(&self, path: &str) -> String {
-        format!("{}/{}/api{}", self.base_url, self.repo, path)
+    /// `<base>` + the generated route's path: `:repo` is this client's
+    /// repo, `:id` the session id (encoded, so a hostile id can't
+    /// smuggle path segments) when the route has one.
+    fn url(&self, route: Route, session_id: Option<&str>) -> String {
+        let encoded = session_id.map(url_encode);
+        let mut params = vec![("repo", self.repo.as_str())];
+        if let Some(id) = encoded.as_deref() {
+            params.push(("id", id));
+        }
+        format!("{}{}", self.base_url, route.fill(&params))
     }
 
-    fn post_json<Req, Resp>(&self, path: &str, body: &Req) -> Result<Resp, VerifyError>
+    /// `GET /:repo/api/verify/sessions/:id`, with `?wait=<n>` when the
+    /// caller long-polls.
+    fn session_url(&self, session_id: &str, wait_seconds: Option<u32>) -> String {
+        let route = paths::VERIFY_SESSIONS_GET;
+        debug_assert_eq!(route.method, "GET", "{}", route.id);
+        let mut url = self.url(route, Some(session_id));
+        if let Some(n) = wait_seconds.filter(|n| *n > 0) {
+            url.push_str(&format!("?wait={n}"));
+        }
+        url
+    }
+
+    fn post_json<Req, Resp>(&self, route: Route, body: &Req) -> Result<Resp, VerifyError>
     where
         Req: Serialize,
         Resp: for<'de> serde::Deserialize<'de>,
     {
-        let url = self.url(path);
+        debug_assert_eq!(route.method, "POST", "{}", route.id);
+        let url = self.url(route, None);
         let result = self
             .agent
             .post(&url)
@@ -81,14 +101,13 @@ impl HttpVerifyClient {
         consume_response(result).map_err(|e| at_server(e, &self.base_url))
     }
 
-    fn get_json<Resp>(&self, path: &str) -> Result<Resp, VerifyError>
+    fn get_json<Resp>(&self, url: &str) -> Result<Resp, VerifyError>
     where
         Resp: for<'de> serde::Deserialize<'de>,
     {
-        let url = self.url(path);
         let result = self
             .agent
-            .get(&url)
+            .get(url)
             .header("Authorization", &self.bearer_header)
             .call();
         consume_response(result).map_err(|e| at_server(e, &self.base_url))
@@ -110,7 +129,7 @@ impl VerifyClient for HttpVerifyClient {
         &self,
         req: &VerifySessionRequest,
     ) -> Result<PostVerifySessionResponse, VerifyError> {
-        self.post_json("/verify/sessions", req)
+        self.post_json(paths::VERIFY_SESSIONS_START, req)
     }
 
     fn get_session(
@@ -118,16 +137,13 @@ impl VerifyClient for HttpVerifyClient {
         session_id: &str,
         wait_seconds: Option<u32>,
     ) -> Result<GetVerifySessionResponse, VerifyError> {
-        let encoded = url_encode(session_id);
-        let path = match wait_seconds {
-            Some(n) if n > 0 => format!("/verify/sessions/{encoded}?wait={n}"),
-            _ => format!("/verify/sessions/{encoded}"),
-        };
-        self.get_json(&path)
+        self.get_json(&self.session_url(session_id, wait_seconds))
     }
 
     fn cancel_session(&self, session_id: &str) -> Result<(), VerifyError> {
-        let url = self.url(&cancel_path(session_id));
+        let route = paths::VERIFY_SESSIONS_CANCEL;
+        debug_assert_eq!(route.method, "POST", "{}", route.id);
+        let url = self.url(route, Some(session_id));
         // Same agent (keeps the connection pool), but a short
         // per-request timeout override — see [`CANCEL_TIMEOUT_SECS`].
         let result = self
@@ -153,12 +169,6 @@ impl VerifyClient for HttpVerifyClient {
             Err(e) => Err(transport_error_to_verify_error(e)),
         }
     }
-}
-
-/// Path for `POST /<repo>/api/verify/sessions/:id/cancel` (relative to the
-/// client's `<base>/<repo>/api`).
-fn cancel_path(session_id: &str) -> String {
-    format!("/verify/sessions/{}/cancel", url_encode(session_id))
 }
 
 // ─── Pure response mapping (mirror of canon http_client) ──────────────────
@@ -387,13 +397,18 @@ mod tests {
     }
 
     #[test]
-    fn cancel_path_targets_the_cancel_endpoint_with_encoding() {
+    fn cancel_url_targets_the_cancel_endpoint_with_encoding() {
+        let tok = Token::new("t");
+        let c = HttpVerifyClient::new("https://api.example.test", &tok, "widgets");
         assert_eq!(
-            cancel_path("01HN1234567890"),
-            "/verify/sessions/01HN1234567890/cancel"
+            c.url(paths::VERIFY_SESSIONS_CANCEL, Some("01HN1234567890")),
+            "https://api.example.test/widgets/api/verify/sessions/01HN1234567890/cancel"
         );
         // Defensive: a hostile session id can't smuggle path segments.
-        assert_eq!(cancel_path("a/b"), "/verify/sessions/a%2Fb/cancel");
+        assert_eq!(
+            c.url(paths::VERIFY_SESSIONS_CANCEL, Some("a/b")),
+            "https://api.example.test/widgets/api/verify/sessions/a%2Fb/cancel"
+        );
     }
 
     #[test]
@@ -401,15 +416,23 @@ mod tests {
         let tok = Token::new("t");
         let c = HttpVerifyClient::new("https://api.example.test", &tok, "widgets");
         assert_eq!(
-            c.url("/verify/sessions"),
+            c.url(paths::VERIFY_SESSIONS_START, None),
             "https://api.example.test/widgets/api/verify/sessions"
         );
         assert_eq!(
-            c.url("/verify/sessions/01HN?wait=1"),
+            c.session_url("01HN", None),
+            "https://api.example.test/widgets/api/verify/sessions/01HN"
+        );
+        assert_eq!(
+            c.session_url("01HN", Some(0)),
+            "https://api.example.test/widgets/api/verify/sessions/01HN"
+        );
+        assert_eq!(
+            c.session_url("01HN", Some(1)),
             "https://api.example.test/widgets/api/verify/sessions/01HN?wait=1"
         );
         assert_eq!(
-            c.url(&cancel_path("01HN")),
+            c.url(paths::VERIFY_SESSIONS_CANCEL, Some("01HN")),
             "https://api.example.test/widgets/api/verify/sessions/01HN/cancel"
         );
     }
