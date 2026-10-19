@@ -249,16 +249,16 @@ where
     }
 }
 
+/// The human-readable message in a proxy error body. A typed body
+/// (`{"error":"<code>","detail":"<prose>"}`) carries its prose in
+/// `detail`; a legacy body carries it in `error`; some bodies use
+/// `message`. The first string field present in that order wins.
 fn extract_error_message(body: &str) -> Option<String> {
     let v: serde_json::Value = serde_json::from_str(body).ok()?;
-    v.get("error")
-        .and_then(|e| e.as_str())
+    ["detail", "error", "message"]
+        .iter()
+        .find_map(|k| v.get(*k).and_then(|e| e.as_str()))
         .map(|s| s.to_string())
-        .or_else(|| {
-            v.get("message")
-                .and_then(|e| e.as_str())
-                .map(|s| s.to_string())
-        })
 }
 
 fn truncate(s: &str, max: usize) -> String {
@@ -408,6 +408,30 @@ mod tests {
         let r: Result<CliTokenResponse, _> = map_response(400, r#"{"error":"Missing code"}"#);
         match r.unwrap_err() {
             AuthError::Malformed(m) => assert!(m.contains("Missing code"), "got: {m}"),
+            other => panic!("expected Malformed, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn map_response_400_typed_body_shows_detail_not_code() {
+        let r: Result<CliTokenResponse, _> = map_response(
+            400,
+            r#"{"error":"invalid","detail":"Missing code","field":"code"}"#,
+        );
+        match r.unwrap_err() {
+            AuthError::Malformed(m) => assert_eq!(m, "Missing code"),
+            other => panic!("expected Malformed, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn map_response_500_typed_body_shows_detail_not_code() {
+        let r: Result<CliTokenResponse, _> = map_response(
+            500,
+            r#"{"error":"token_mint_failed","detail":"token mint failed"}"#,
+        );
+        match r.unwrap_err() {
+            AuthError::Malformed(m) => assert_eq!(m, "proxy HTTP 500: token mint failed"),
             other => panic!("expected Malformed, got {other:?}"),
         }
     }
