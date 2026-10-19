@@ -235,6 +235,34 @@ fn oauth_exchange_400_missing_code_surfaces_proxy_error_message() {
 }
 
 #[test]
+fn oauth_exchange_400_typed_body_surfaces_detail_not_code() {
+    let (base, _handle) = spawn_mock(CannedResponse {
+        status_line: "400 Bad Request",
+        body: r#"{"error":"invalid","detail":"Missing code","field":"code"}"#.into(),
+    });
+    let err =
+        oauth_exchange(&custom_server(&base), "", Some("owner/repo"), None).expect_err("must fail");
+    match err {
+        AuthError::Malformed(m) => assert_eq!(m, "Missing code"),
+        other => panic!("expected Malformed, got {other:?}"),
+    }
+}
+
+#[test]
+fn oauth_exchange_500_typed_body_surfaces_detail_not_code() {
+    let (base, _handle) = spawn_mock(CannedResponse {
+        status_line: "500 Internal Server Error",
+        body: r#"{"error":"token_mint_failed","detail":"token mint failed"}"#.into(),
+    });
+    let err = oauth_exchange(&custom_server(&base), "c", Some("owner/repo"), None)
+        .expect_err("must fail");
+    match err {
+        AuthError::Malformed(m) => assert_eq!(m, "proxy HTTP 500: token mint failed"),
+        other => panic!("expected Malformed, got {other:?}"),
+    }
+}
+
+#[test]
 fn oauth_exchange_403_unknown_user_maps_to_invalid() {
     let (base, _handle) = spawn_mock(CannedResponse {
         status_line: "403 Forbidden",
