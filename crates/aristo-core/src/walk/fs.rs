@@ -419,12 +419,19 @@ mod tests {
             write(tmp.path(), file, "not valid source");
         }
         let opts = WalkOptions::from_patterns(&["src/excluded.c"]).unwrap();
-        assert_eq!(walk_directory_with(tmp.path(), &opts).unwrap(), expected);
+        assert_eq!(
+            walk_directory_with(tmp.path(), &opts)
+                .expect("annotation walk must skip excluded and unsupported files"),
+            expected,
+            "mixed walk must preserve direct extractor records in file/source order"
+        );
         let expected_paths = ["include/api.h", "src/a.c", "src/plain.rs", "src/z.rs"]
             .map(|file| tmp.path().join(file));
         assert_eq!(
-            walk_for_freshness_with(tmp.path(), &opts).unwrap(),
-            expected_paths
+            walk_for_freshness_with(tmp.path(), &opts)
+                .expect("freshness walk must select source paths without parsing"),
+            expected_paths,
+            "freshness must include unannotated source and apply the same file filters"
         );
     }
 
@@ -433,11 +440,15 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("invalid.rs");
         fs::write(&path, [0xff]).unwrap();
-        assert_eq!(walk_for_freshness(tmp.path()).unwrap(), vec![path]);
-        assert!(matches!(
-            walk_directory(tmp.path()),
-            Err(FsWalkError::Io { .. })
-        ));
+        assert_eq!(
+            walk_for_freshness(tmp.path()).unwrap(),
+            vec![path],
+            "freshness discovery must not decode source contents"
+        );
+        assert!(
+            matches!(walk_directory(tmp.path()), Err(FsWalkError::Io { .. })),
+            "annotation extraction must report invalid UTF-8 as an I/O error"
+        );
     }
 
     #[test]
