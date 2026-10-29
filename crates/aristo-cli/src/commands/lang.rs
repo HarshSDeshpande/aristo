@@ -1,18 +1,18 @@
 //! `aristo lang` — emit a syntax cheat sheet for the detected language.
 //!
-//! Auto-detects by looking for the language's canonical manifest file in
-//! the current directory (`Cargo.toml` for Rust). Phase 1 ships Rust only;
-//! per K5, adding a new language is implementing the cheat-sheet text +
-//! the manifest detector, with no other CLI changes required. The skills
+//! Auto-detects Rust or C from manifest files or C source in the current
+//! directory. File extension selection uses the core language registry.
+//! The skills
 //! that author annotations are instructed to run `aristo lang` first, so
 //! they always get an authoritative source of syntax instead of guessing.
 //!
 //! `--file <path>` lets skills pick a per-file language (for polyglot
-//! monorepos). Phase 1 errors on any non-Rust file; the Python / Go /
-//! TypeScript cheat sheets land with their respective `LanguageSyntax`
-//! impls in Phase 2+.
+//! monorepos). Python / Go / TypeScript detection and cheat sheets remain
+//! deferred until their source support lands.
 
 use std::path::{Path, PathBuf};
+
+use aristo_core::language::language_for_extension;
 
 use crate::{CliError, CliResult};
 
@@ -155,10 +155,8 @@ fn detect_c_dir_signal(cwd: &Path) -> Option<String> {
         .ok()?
         .flatten()
         .filter(|e| {
-            matches!(
-                e.path().extension().and_then(|s| s.to_str()),
-                Some("c") | Some("h")
-            )
+            language_for_extension(e.path().extension().and_then(|s| s.to_str()))
+                .is_some_and(|language| language.id() == "c")
         })
         .filter_map(|e| e.file_name().to_str().map(str::to_string))
         .collect();
@@ -167,12 +165,14 @@ fn detect_c_dir_signal(cwd: &Path) -> Option<String> {
 }
 
 fn detect_for_file(path: &Path) -> CliResult<Lang> {
-    match path.extension().and_then(|s| s.to_str()) {
+    match language_for_extension(path.extension().and_then(|s| s.to_str()))
+        .map(|language| language.id())
+    {
         // The manifest path is informational, so use the file's path verbatim.
-        Some("rs") => Ok(Lang::Rust {
+        Some("rust") => Ok(Lang::Rust {
             manifest: path.to_path_buf(),
         }),
-        Some("c") | Some("h") => Ok(Lang::C {
+        Some("c") => Ok(Lang::C {
             detected_via: path.display().to_string(),
         }),
         _ => Err(unsupported_error()),
@@ -205,5 +205,72 @@ fn emit_cheat_sheet(lang: Lang) {
             println!();
             print!("{C_CHEAT_SHEET}");
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn per_file_detection_preserves_language_and_reported_path() {
+        for file in ["src/lib.rs", "src/api.c", "include/api.h"] {
+            let path = Path::new(file);
+            match detect_for_file(path).unwrap() {
+                Lang::Rust { manifest } => {
+                    assert_eq!(file, "src/lib.rs", "unexpected Rust selection");
+                    assert_eq!(manifest, path, "Rust must report the supplied path");
+                }
+                Lang::C { detected_via } => {
+                    assert_ne!(file, "src/lib.rs", "unexpected C selection");
+                    assert_eq!(detected_via, file, "C must report the supplied path");
+                }
+            }
+        }
+        for file in [
+            "lib.RS", "api.C", "api.cpp", "api.hpp", "app.py", "app.ts", "app.go", "README",
+        ] {
+            assert!(
+                matches!(
+                    detect_for_file(Path::new(file)),
+                    Err(CliError::Other { exit_code: 2, .. })
+                ),
+                "{file} must retain the unsupported-language error"
+            );
+        }
+    }
+
+    #[test]
+    fn c_directory_signal_preserves_extension_and_manifest_precedence() {
+        let tmp = tempfile::tempdir().unwrap();
+        for name in ["a.C", "a.cpp", "a.rs"] {
+            std::fs::write(tmp.path().join(name), "").unwrap();
+        }
+        assert_eq!(
+            detect_c_dir_signal(tmp.path()),
+            None,
+            "only C extensions count"
+        );
+        for name in ["z.c", "b.h"] {
+            std::fs::write(tmp.path().join(name), "").unwrap();
+        }
+        assert_eq!(
+            detect_c_dir_signal(tmp.path()).as_deref(),
+            Some("b.h"),
+            "source signals are sorted"
+        );
+        for name in ["Makefile", "CMakeLists.txt"] {
+            std::fs::write(tmp.path().join(name), "").unwrap();
+        }
+        assert_eq!(
+            detect_c_dir_signal(tmp.path()).as_deref(),
+            Some("CMakeLists.txt"),
+            "manifest priority beats source names"
+        );
+        std::fs::write(tmp.path().join("Cargo.toml"), "").unwrap();
+        assert!(
+            matches!(detect_for_dir(tmp.path()), Ok(Lang::Rust { .. })),
+            "Cargo retains precedence over C signals"
+        );
     }
 }

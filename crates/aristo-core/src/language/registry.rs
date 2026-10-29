@@ -1,7 +1,9 @@
 use crate::walk::extract::{extract_from_source, ExtractError, ExtractedAnnotation};
 use crate::walk::extract_c::extract_from_c_source;
 
-pub(crate) struct SourceLanguage {
+/// Read-only built-in language descriptor returned by [`language_for_extension`].
+/// Extraction remains internal to the core crate.
+pub struct SourceLanguage {
     id: &'static str,
     extensions: &'static [&'static str],
     extractor: fn(&str) -> Result<Vec<ExtractedAnnotation>, ExtractError>,
@@ -18,6 +20,11 @@ impl std::fmt::Debug for SourceLanguage {
 }
 
 impl SourceLanguage {
+    /// Language identifier, currently `rust` or `c`.
+    pub fn id(&self) -> &'static str {
+        self.id
+    }
+
     pub(crate) fn extract(&self, source: &str) -> Result<Vec<ExtractedAnnotation>, ExtractError> {
         (self.extractor)(source)
     }
@@ -36,7 +43,11 @@ static SOURCE_LANGUAGES: &[SourceLanguage] = &[
     },
 ];
 
-// Match extensions exactly: `.RS` and `.C` remain unsupported, as before.
+/// Select a built-in source language by its exact, case-sensitive extension.
+///
+/// Extensions do not include a leading dot. `rs` selects Rust; `c` and `h`
+/// select C. Missing or unsupported extensions, including `RS` and `C`,
+/// return `None`. This lookup performs no filesystem access or parsing.
 #[aristo::intent(
     "Both the annotation walk and the freshness preflight route their \
      extension check through this one function, so they can never disagree \
@@ -47,7 +58,7 @@ static SOURCE_LANGUAGES: &[SourceLanguage] = &[
     verify = "test",
     id = "source_language_extension_set_is_single_authority"
 )]
-pub(crate) fn language_for_extension(ext: Option<&str>) -> Option<&'static SourceLanguage> {
+pub fn language_for_extension(ext: Option<&str>) -> Option<&'static SourceLanguage> {
     let ext = ext?;
     SOURCE_LANGUAGES
         .iter()
@@ -87,7 +98,7 @@ mod tests {
         ] {
             let actual = language_for_extension(extension);
             assert_eq!(
-                actual.map(|language| language.id),
+                actual.map(SourceLanguage::id),
                 expected_id,
                 "extension {extension:?} resolved to {actual:?}"
             );

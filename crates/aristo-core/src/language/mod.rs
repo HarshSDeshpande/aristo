@@ -1,3 +1,5 @@
+//! Built-in source language selection shared by discovery and CLI detection.
+
 mod registry;
 
-pub(crate) use registry::language_for_extension;
+pub use registry::{language_for_extension, SourceLanguage};
